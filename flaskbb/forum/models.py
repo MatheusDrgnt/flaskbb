@@ -1579,6 +1579,22 @@ class Category(db.Model, CRUDMixin):
 
         return get_categories_and_forums(forums, user)
 
+    
+    @classmethod
+    def get_forums(cls, category_id: int, user: "User"):
+        """Get the forums for the category."""
+        query, forum_alias = cls._get_visible_forums_query(user)
+        forums = (
+            db.session.execute(
+                query.filter(cls.id == category_id).order_by(forum_alias.position)
+            )
+            .unique()
+            .all()
+        )
+        if not forums:
+            abort(404)
+        return get_forums(forums, user)
+
     @classmethod
     def _get_visible_forums_query(cls, user: "User"):
         """Builds the query for forums visible to the user's groups."""
@@ -1590,3 +1606,30 @@ class Category(db.Model, CRUDMixin):
         else:
             group_filter = Group.id == Group.get_guest_group().id
             join_forumsread = False
+
+        visible_forums = (
+            db.select(Forum).filter(Forum.groups.any(group_filter)).subquery()
+        )
+        forum_alias = aliased(Forum, visible_forums)
+
+        if join_forumsread:
+            query = (
+                db.select(cls, forum_alias, ForumsRead)
+                .join(forum_alias, cls.id == forum_alias.category_id)
+                .outerjoin(
+                    ForumsRead,
+                    db.and_(
+                        ForumsRead.forum_id == forum_alias.id,
+                        ForumsRead.user_id == user.id,
+                    ),
+                )
+                .add_columns(forum_alias)
+                .add_columns(ForumsRead)
+            )
+        else:
+            query = (
+                db.select(cls, forum_alias)
+                .join(forum_alias, cls.id == forum_alias.category_id)
+                .add_columns(forum_alias)
+            )
+        return query, forum_alias
