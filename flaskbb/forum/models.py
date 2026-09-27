@@ -429,26 +429,17 @@ class Post(HideableCRUDMixin, db.Model):
 
             self.topic.last_updated = self.topic.last_post.date_created
 
-    def _update_counts(self):
-        if self.hidden:
-            clauses = [Post.hidden.is_(False), Post.id != self.id]
-        else:
-            clauses = [db.or_(Post.hidden.is_(False), Post.id == self.id)]
+        def _update_counts(self):
+            if self.hidden:
+                clauses = [Post.hidden.is_(False), Post.id != self.id]
+            else:
+                clauses = [db.or_(Post.hidden.is_(False), Post.id == self.id)]
 
         user_post_clauses = clauses + [
             Post.user_id == self.user.id,
             Topic.hidden.is_(False),
         ]
-
-        stmt = (
-            db.select(db.func.count(Post.id))
-            .join(Topic, Post.topic_id == Topic.id)
-            .where(*user_post_clauses)
-        )
-        user_post_count = db.session.execute(stmt).scalar_one()
-
-        # Update the post counts
-        self.user.post_count = user_post_count
+        self.user.post_count = self._count_posts(*user_post_clauses)
 
         if self.topic.hidden:
             self.topic.post_count = 0
@@ -456,26 +447,24 @@ class Post(HideableCRUDMixin, db.Model):
             topic_post_clauses = clauses + [
                 Post.topic_id == self.topic.id,
             ]
-            stmt = (
-                db.select(db.func.count(Post.id))
-                .join(Topic, Post.topic_id == Topic.id)
-                .where(*topic_post_clauses)
-            )
-            topic_post_count = db.session.execute(stmt).scalar_one()
-            self.topic.post_count = topic_post_count
+            self.topic.post_count = self._count_posts(*topic_post_clauses)
 
         forum_post_clauses = clauses + [
             Topic.forum_id == self.topic.forum.id,
             Topic.hidden.is_(False),
         ]
+        self.topic.forum.post_count = self._count_posts(*forum_post_clauses)
+
+    @staticmethod
+    def _count_posts(*clauses) -> int:
+        """Counts visible posts matching the given clauses."""
         stmt = (
             db.select(db.func.count(Post.id))
             .join(Topic, Post.topic_id == Topic.id)
-            .where(*forum_post_clauses)
+            .where(*clauses)
         )
-        forum_post_count = db.session.execute(stmt).scalar_one()
-        self.topic.forum.post_count = forum_post_count
-
+        return db.session.execute(stmt).scalar_one()
+    
     def _restore_post_to_topic(self):
         last_unhidden_post = db.session.execute(
             db.select(Post)
