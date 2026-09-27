@@ -1187,14 +1187,27 @@ class Forum(db.Model, CRUDMixin):
         if not user.is_authenticated or topicsread is None:
             return False
 
+        unread_count = self._count_unread_topics(user, topicsread)
+
+        if unread_count == 0:
+            return self._mark_forum_read(user, forumsread, topicsread)
+
+        logger.debug(
+            "No ForumsRead object updated - there are still {} unread topics.".format(
+                unread_count
+            )
+        )
+        return False
+
+    def _count_unread_topics(self, user: "User", topicsread: TopicsRead) -> int:
+        """Counts the unread topics in this forum for the given user."""
         read_cutoff = None
         if flaskbb_config["TRACKER_LENGTH"] > 0:
             read_cutoff = time_utcnow() - timedelta(
                 days=flaskbb_config["TRACKER_LENGTH"]
             )
 
-        # fetch the unread posts in the forum
-        unread_count = db.session.execute(
+        return db.session.execute(
             db.select(db.func.count())
             .select_from(Topic)
             .outerjoin(
@@ -1222,45 +1235,35 @@ class Forum(db.Model, CRUDMixin):
             )
         ).scalar_one()
 
-        # No unread topics available - trying to mark the forum as read
-        if unread_count == 0:
-            logger.debug("No unread topics. Trying to mark the forum as read.")
+    def _mark_forum_read(
+        self,
+        user: "User",
+        forumsread: ForumsRead | None,
+        topicsread: TopicsRead,
+    ) -> bool:
+        """Marks the forum as read for the user (creating/updating ForumsRead)."""
+        logger.debug("No unread topics. Trying to mark the forum as read.")
 
-            if forumsread and forumsread.last_read > topicsread.last_read:
-                logger.debug(
-                    "forumsread.last_read is newer than topicsread.last_read. Everything is read."
-                )
-                return False
+        if forumsread and forumsread.last_read > topicsread.last_read:
+            logger.debug(
+                "forumsread.last_read is newer than topicsread.last_read. Everything is read."
+            )
+            return False
 
-            # ForumRead Entry exists - Updating it because a new topic/post
-            # has been submitted and has read everything (obviously, else the
-            # unread_count would be useless).
-            elif forumsread:
-                logger.debug(
-                    "Updating existing ForumsRead '{}' object.".format(forumsread)
-                )
-                forumsread.last_read = time_utcnow()
-                forumsread.save()
-                return True
-
-            # No ForumRead Entry existing - creating one.
-            logger.debug("Creating new ForumsRead object.")
-            forumsread = ForumsRead()
-            forumsread.user = user
-            forumsread.forum = self
+        if forumsread:
+            logger.debug("Updating existing ForumsRead '{}' object.".format(forumsread))
             forumsread.last_read = time_utcnow()
             forumsread.save()
             return True
 
-        # Nothing updated, because there are still more than 0 unread
-        # topicsread
-        logger.debug(
-            "No ForumsRead object updated - there are still {} unread topics.".format(
-                unread_count
-            )
-        )
-        return False
-
+        logger.debug("Creating new ForumsRead object.")
+        forumsread = ForumsRead()
+        forumsread.user = user
+        forumsread.forum = self
+        forumsread.last_read = time_utcnow()
+        forumsread.save()
+        return True
+    
     def recalculate(self, last_post: bool = False):
         """Recalculates the post_count and topic_count in the forum.
         Returns the forum with the recounted stats.
