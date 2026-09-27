@@ -429,11 +429,11 @@ class Post(HideableCRUDMixin, db.Model):
 
             self.topic.last_updated = self.topic.last_post.date_created
 
-        def _update_counts(self):
-            if self.hidden:
-                clauses = [Post.hidden.is_(False), Post.id != self.id]
-            else:
-                clauses = [db.or_(Post.hidden.is_(False), Post.id == self.id)]
+    def _update_counts(self):
+        if self.hidden:
+            clauses = [Post.hidden.is_(False), Post.id != self.id]
+        else:
+            clauses = [db.or_(Post.hidden.is_(False), Post.id == self.id)]
 
         user_post_clauses = clauses + [
             Post.user_id == self.user.id,
@@ -464,7 +464,7 @@ class Post(HideableCRUDMixin, db.Model):
             .where(*clauses)
         )
         return db.session.execute(stmt).scalar_one()
-    
+
     def _restore_post_to_topic(self):
         last_unhidden_post = db.session.execute(
             db.select(Post)
@@ -476,13 +476,10 @@ class Post(HideableCRUDMixin, db.Model):
             .limit(1)
         ).scalar_one_or_none()
 
-        # should never be None, but deal with it anyways to be safe
         if last_unhidden_post and self.date_created > last_unhidden_post.date_created:
             self.topic.last_post = self
             self.second_last_post = last_unhidden_post  # TODO
 
-            # if we're the newest in the topic again, we might be the newest
-            # in the forum again only set if our parent topic isn't hidden
             if not self.topic.hidden and (
                 not self.topic.forum.last_post
                 or self.date_created > self.topic.forum.last_post.date_created
