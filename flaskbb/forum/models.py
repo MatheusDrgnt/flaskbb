@@ -827,7 +827,6 @@ class Topic(HideableCRUDMixin, db.Model):
         """
         pluggy.hook.flaskbb_event_topic_save_before(topic=self)
 
-        # Updates the topic
         if self.id:
             db.session.add(self)
             db.session.commit()
@@ -838,34 +837,34 @@ class Topic(HideableCRUDMixin, db.Model):
             logger.error("Cant create a topic without a user or forum")
             return
 
+        self._create_new_topic(user, forum, post)
+
+        db.session.commit()
+        pluggy.hook.flaskbb_event_topic_save_after(topic=self, is_new=True)
+        return self
+
+    def _create_new_topic(
+        self,
+        user: "User",
+        forum: "Forum",
+        post: "Post | None",
+    ):
+        """Persists a new topic and its initial post, updating counters."""
         with db.session.no_autoflush:
-            # Set the forum and user id
             self.forum = forum
             self.user = user
             self.username = user.username
-
-            # Set the last_updated time. Needed for the readstracker
             self.date_created = self.last_updated = time_utcnow()
 
-            # Insert and commit the topic
             db.session.add(self)
             db.session.commit()
 
             if post is not None:
                 self._post = post
 
-            # Create the topic post
             self._post.save(user, self)
-
-            # Update the first and last post id
             self.last_post = self.first_post = self._post
-
-            # Update the topic count
             forum.topic_count += 1
-
-        db.session.commit()
-        pluggy.hook.flaskbb_event_topic_save_after(topic=self, is_new=True)
-        return self
 
     @override
     def delete(self):
@@ -1581,74 +1580,13 @@ class Category(db.Model, CRUDMixin):
         return get_categories_and_forums(forums, user)
 
     @classmethod
-    def get_forums(cls, category_id: int, user: "User"):
-        """Get the forums for the category.
-        It returns a tuple with the category and the forums with their
-        forumsread object are stored in a list.
-
-        A return value can look like this for a category with two forums::
-
-            (<Category 1>, [(<Forum 1>, None), (<Forum 2>, None)])
-
-        :param category_id: The category id
-        :param user: The user object is needed to check if we also need their
-                     forumsread object.
-        """
+    def _get_visible_forums_query(cls, user: "User"):
+        """Builds the query for forums visible to the user's groups."""
         from flaskbb.user.models import Group
 
         if user.is_authenticated:
-            # get list of user group ids
-            user_groups = [gr.id for gr in user.groups]
-            # filter forums by user groups
-            user_forums = (
-                db.select(Forum)
-                .filter(Forum.groups.any(Group.id.in_(user_groups)))
-                .subquery()
-            )
-
-            forum_alias = aliased(Forum, user_forums)
-            forums = (
-                db.session.execute(
-                    db.select(cls, forum_alias, ForumsRead)
-                    .filter(cls.id == category_id)
-                    .join(forum_alias, cls.id == forum_alias.category_id)
-                    .outerjoin(
-                        ForumsRead,
-                        db.and_(
-                            ForumsRead.forum_id == forum_alias.id,
-                            ForumsRead.user_id == user.id,
-                        ),
-                    )
-                    .add_columns(forum_alias)
-                    .add_columns(ForumsRead)
-                    .order_by(forum_alias.position)
-                )
-                .unique()
-                .all()
-            )
+            group_filter = Group.id.in_([gr.id for gr in user.groups])
+            join_forumsread = True
         else:
-            guest_group = Group.get_guest_group()
-            # filter forums by guest groups
-            guest_forums = (
-                db.select(Forum)
-                .filter(Forum.groups.any(Group.id == guest_group.id))
-                .subquery()
-            )
-
-            forum_alias = aliased(Forum, guest_forums)
-            forums = (
-                db.session.execute(
-                    db.select(cls, forum_alias)
-                    .filter(cls.id == category_id)
-                    .join(forum_alias, cls.id == forum_alias.category_id)
-                    .add_columns(forum_alias)
-                    .order_by(forum_alias.position)
-                )
-                .unique()
-                .all()
-            )
-
-        if not forums:
-            abort(404)
-
-        return get_forums(forums, user)
+            group_filter = Group.id == Group.get_guest_group().id
+            join_forumsread = False
